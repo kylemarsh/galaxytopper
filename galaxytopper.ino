@@ -6,16 +6,22 @@
  * It uses 6 ShiftBrite pixels to drive a "galaxy" of points of light poking
  * through the felt of a simple, felt top hat. The hat has several different
  * modes and more can be added fairly easily. There is a momentary pushbutton
- * hidden under the bow on the band to cycle through the modes.
+ * hidden under the bow on the band to cycle through the modes. To keep things
+ * fresh and interesting the pushbutton seeds the pRNG with the current value
+ * of millis() when pushed.
  *
  * MODES:
- *  - Nebula: each pixel fades randomly through blue/white/purple colors
- *   creating a rippling, twinkling pattern in the colors of the night sky
- *  - Christmas: Pixels cycle through the soft colors of old strings of
- *   Christmas lights. Colors are nominally red, yellow, green, and blue, but
- *   in practice are washed out and warmed over
+ *  - Stealth: All pixels are off, leaving the hat dark.
+ *  - Sparkle: each pixel picks a random color, waits a short time, and picks a
+ *      new one
  *  - Rainbow: Each pixel fades around the color wheel. Pixels are offset from
- *   one another to give a more active pattern
+ *      one another to give a more active pattern
+ *  - Nebula: each pixel fades randomly through blue/white/purple colors
+ *      creating a rippling, twinkling pattern in the colors of the night sky
+ *  - Christmas Lights: Pixels cycle through the soft colors of old strings of
+ *      Christmas lights. Colors are nominally red, yellow, green, and blue,
+ *      TODO: but in practice are washed out and warmed over
+ *  - Christmas: Pixels alternate between red and green.
  *
  * TODO:
  * I'd really like to add a couple more pixels tied directly into certain
@@ -32,7 +38,7 @@
 #define LATCH_PIN    9  // replace with pin you use for the ShiftBrite latch
 #define BUTTON_PIN   3  // pin used for the button to cycle modes
 #define NUM_LEDS     6  // Number of LEDs in your chain
-#define NUM_MODES    3  // Number of light modes the topper supports
+#define NUM_MODES    6  // Number of light modes the topper supports
 #define FPS        100  // number of times per second to update shiftbrites
 #define TPS        100  // ticks per second
 
@@ -43,17 +49,18 @@ void colorwheel_tick(Ticker *t, unsigned long tick);
 void cycling_tick(Ticker *t, unsigned long tick);
 void fading_cycling_tick(Ticker *t, unsigned long tick);
 void targeted_tick(Ticker *t, unsigned long tick);
+void dark_tick(Ticker *t, unsigned long tick);
 TickerRgb hsv2rgb(double hue, double sat, double value);
 
 /* Define Objects */
 ShiftBrite sb(NUM_LEDS, LATCH_PIN);
 Ticker Tickers[NUM_LEDS] = {
-	Ticker(&targeted_tick, 3, 0,  0),
-	Ticker(&targeted_tick, 3, 0,  5),
-	Ticker(&targeted_tick, 3, 0, 10),
-	Ticker(&targeted_tick, 3, 0, 15),
-	Ticker(&targeted_tick, 3, 0, 20),
-	Ticker(&targeted_tick, 3, 0, 25),
+	Ticker(&dark_tick, 0, 0,  0),
+	Ticker(&dark_tick, 0, 0,  0),
+	Ticker(&dark_tick, 0, 0,  0),
+	Ticker(&dark_tick, 0, 0,  0),
+	Ticker(&dark_tick, 0, 0,  0),
+	Ticker(&dark_tick, 0, 0,  0),
 };
 
 /* Timing */
@@ -77,7 +84,7 @@ void setup()
 	attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), trigger_change, FALLING);
 
 	// Initialize tickers
-	mode_nebula();
+	mode_stealth();
 }
 
 void loop()
@@ -118,26 +125,41 @@ void trigger_change() {
 }
 
 void change_mode() {
+	randomSeed(millis());
+
 	++current_mode;
 	current_mode %= NUM_MODES;
 	switch(current_mode) {
 		case 0:
-			mode_nebula();
+			mode_stealth();
 			break;
 		case 1:
-			mode_wheel();
+			mode_sparkle();
 			break;
 		case 2:
-			mode_christmas_lights();
+			mode_rainbow();
 			break;
 		case 3:
+			mode_nebula();
+			break;
+		case 4:
+			mode_christmas_lights();
+			break;
+		case 5:
 			mode_christmas();
 			break;
 		default:
-			mode_nebula();
+			mode_stealth();
 			break;
 	}
 
+}
+
+void mode_stealth()
+{
+	for (int i = 0; i < NUM_LEDS; ++i) {
+		Tickers[i] = Ticker(&dark_tick, 0, 0, 0);
+	}
 }
 
 void mode_nebula()
@@ -145,18 +167,26 @@ void mode_nebula()
 	// Use targeting tickers constrained to be colors with strong blue channels
 	// to make a flickering "nebula" effect.
 	for (int i = 0; i < NUM_LEDS; ++i) {
-		Tickers[i] = Ticker(&targeted_tick, 3, 0, i * 5),
+		Tickers[i] = Ticker(&targeted_tick, 3, 0, i * 5 + 1);
 
+		Tickers[i].targets[0] = {red: random(0,1023), green: random(0,1023), blue: random(0,1023)};
 		Tickers[i].targets[1] = {red: 0, green: 0, blue: 511};
 		Tickers[i].targets[2] = {red: 1023, green: 1023, blue: 1023};
+	}
+}
+
+void mode_sparkle()
+{
+	for (int i = 0; i < NUM_LEDS; ++i) {
+		Tickers[i] = Ticker(&random_tick, 0, 2, i);
 	}
 }
 
 void mode_christmas_lights()
 {
 	for (int i = 0; i < NUM_LEDS; ++i) {
-		// Slow by 2^10 to change about once per second
-		Tickers[i] = Ticker(&cycling_tick, 4, 10, i);
+		// Slow by 2^6
+		Tickers[i] = Ticker(&cycling_tick, 4, 6, i);
 
 		//TODO: Adjust these values to taste to simulate christmas lights
 		Tickers[i].targets[0] = {red: 1023, green:    0, blue:    0}; // Red
@@ -169,15 +199,15 @@ void mode_christmas_lights()
 void mode_christmas()
 {
 	for (int i = 0; i < NUM_LEDS; ++i) {
-		// Slow by 2^10 to change about once per second
-		Tickers[i] = Ticker(&cycling_tick, 2, 10, i);
+		// Slow by 2^6
+		Tickers[i] = Ticker(&cycling_tick, 2, 6, i);
 
 		Tickers[i].targets[0] = {red: 1023, green:    0, blue:    0}; // Red
 		Tickers[i].targets[1] = {red:    0, green: 1023, blue:    0}; // Green
 	}
 }
 
-void mode_wheel()
+void mode_rainbow()
 {
 	for (int i = 0; i < NUM_LEDS; ++i) {
 		Tickers[i] = Ticker(&colorwheel_tick, 0, 0, i * 15);
@@ -187,6 +217,12 @@ void mode_wheel()
 /*********************
  *  TICKER FUNCTIONS *
  *********************/
+
+/* Do nothing */
+void dark_tick(Ticker *t, unsigned long tick)
+{
+	t->current = {red: 0, green: 0, blue: 0};
+}
 
 /*
  * Cycles around the color wheel by using tick to compute the hue (value and
@@ -203,6 +239,20 @@ void colorwheel_tick(Ticker *t, unsigned long tick)
 {
 	int16_t hue = ((tick >> t->speed_adjust) + t->offset) % 360;
 	t->current = hsv2rgb((double)hue, 1.0, 1.0);
+}
+
+/*
+ * Picks a random color and switches to it.
+ *
+ * By default it switches every tick. Slow this by 2^n by setting Ticker's
+ * speed_adjust to n.
+ *
+ * This tick function does not use any targets
+ */
+void random_tick(Ticker *t, unsigned long tick)
+{
+	if (tick % (1 << t->speed_adjust)) {return;}
+	t->current = {red: random(0,1023), green: random(0,1023), blue: random(0,1023)};
 }
 
 /*
