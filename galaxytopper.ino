@@ -5,28 +5,23 @@
  *
  * It uses 6 ShiftBrite pixels to drive a "galaxy" of points of light poking
  * through the felt of a simple, felt top hat. The hat has several different
- * modes and more can be added fairly easily. There is a momentary pushbutton
- * hidden under the bow on the band to cycle through the modes. To keep things
- * fresh and interesting the pushbutton seeds the pRNG with the current value
- * of millis() when pushed.
+ * modes and more can be added fairly easily. There is a tilt switch taped into
+ * the brim of the hat, positioned nearly vertically. Tipping the hat advances
+ * the pattern displayed, alternating with the "stealth" pattern. To keep
+ * things fresh and interesting we seed the pRNG with the current value of
+ * millis() when the switch activates.
  *
  * MODES:
- *  - Stealth: All pixels are off, leaving the hat dark.
- *  - Sparkle: each pixel picks a random color, waits a short time, and picks a
- *      new one
- *  - Rainbow: Each pixel fades around the color wheel. Pixels are offset from
- *      one another to give a more active pattern
- *  - Nebula: each pixel fades randomly through blue/white/purple colors
+ *  - Stealth:
+ *		All pixels are off, leaving the hat dark.
+ *  - Nebula:
+ *		Each pixel fades randomly through blue/white/purple colors
  *      creating a rippling, twinkling pattern in the colors of the night sky
- *  - Christmas Lights: Pixels cycle through the soft colors of old strings of
- *      Christmas lights. Colors are nominally red, yellow, green, and blue,
- *      TODO: but in practice are washed out and warmed over
- *  - Christmas: Pixels alternate between red and green.
- *
- * TODO:
- * I'd really like to add a couple more pixels tied directly into certain
- * patterns (alchemical symbols?) that I can have illuminate at random or on
- * command, but I'm not sure if that'll work out.
+ *  - Sparkle:
+ *		Each pixel flickers quickly from one random value to another
+ *  - Rainbow:
+ *		Each pixel fades around the color wheel. Pixels are offset from
+ *      one another to give a more active pattern
  */
 
 
@@ -36,7 +31,7 @@
 
 /* Constants */
 #define LATCH_PIN    9  // replace with pin you use for the ShiftBrite latch
-#define BUTTON_PIN   3  // pin used for the button to cycle modes
+#define SWITCH_PIN   3  // pin used for the switch to cycle modes
 #define NUM_LEDS     6  // Number of LEDs in your chain
 #define NUM_MODES    6  // Number of light modes the topper supports
 #define FPS        100  // number of times per second to update shiftbrites
@@ -45,15 +40,18 @@
 /* Predeclarations */
 // Necessary to avoid confusing particle's preprocessor
 // see https://docs.particle.io/reference/firmware/core/#preprocessor
-void colorwheel_tick(Ticker *t, unsigned long tick);
-void cycling_tick(Ticker *t, unsigned long tick);
-void fading_cycling_tick(Ticker *t, unsigned long tick);
-void targeted_tick(Ticker *t, unsigned long tick);
 void dark_tick(Ticker *t, unsigned long tick);
+void random_tick(Ticker *t, unsigned long tick);
+void colorwheel_tick(Ticker *t, unsigned long tick);
+void targeted_tick(Ticker *t, unsigned long tick);
+void hsv_targeted_tick(Ticker *t, unsigned long tick);
+
 TickerRgb hsv2rgb(double hue, double sat, double value);
 
 /* Define Objects */
 ShiftBrite sb(NUM_LEDS, LATCH_PIN);
+//TODO: see if this works
+//Ticker Tickers[NUM_LEDS];
 Ticker Tickers[NUM_LEDS] = {
 	Ticker(&dark_tick, 0, 0,  0),
 	Ticker(&dark_tick, 0, 0,  0),
@@ -68,10 +66,10 @@ unsigned long frame_delay = 1000 / FPS;
 unsigned long tick_delay  = 1000 / TPS;
 unsigned long tick, last_tick, last_frame = 0;
 
-/* Button to switch modes */
+/* Switch to switch modes */
 int current_mode = 0;
 volatile int           mode_change_requested = 0;
-volatile unsigned long button_last_triggered = 0;
+volatile unsigned long switch_last_triggered = 0;
 
 void setup()
 {
@@ -79,9 +77,9 @@ void setup()
 	sb.begin();
 	sb.show();
 
-	// Set up mode-change button
-	pinMode(BUTTON_PIN, INPUT_PULLUP);
-	attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), trigger_change, FALLING);
+	// Set up mode-change switch
+	pinMode(SWITCH_PIN, INPUT_PULLUP);
+	attachInterrupt(digitalPinToInterrupt(SWITCH_PIN), trigger_change, FALLING);
 
 	// Initialize tickers
 	mode_stealth();
@@ -118,8 +116,8 @@ void loop()
  * MODE SETUP FUNCTIONS *
  ************************/
 void trigger_change() {
-	if (millis() - button_last_triggered > 600) {
-		button_last_triggered = millis();
+	if (millis() - switch_last_triggered > 600) {
+		switch_last_triggered = millis();
 		mode_change_requested = 1;
 	}
 }
@@ -134,19 +132,13 @@ void change_mode() {
 			mode_stealth();
 			break;
 		case 1:
-			mode_sparkle();
-			break;
-		case 2:
-			mode_rainbow();
-			break;
-		case 3:
 			mode_nebula();
 			break;
-		case 4:
-			mode_christmas_lights();
+		case 3:
+			mode_rainbow();
 			break;
 		case 5:
-			mode_christmas();
+			mode_sparkle();
 			break;
 		default:
 			mode_stealth();
@@ -169,41 +161,37 @@ void mode_nebula()
 	for (int i = 0; i < NUM_LEDS; ++i) {
 		Tickers[i] = Ticker(&targeted_tick, 3, 0, i * 5 + 1);
 
-		Tickers[i].targets[0] = {red: random(0,1023), green: random(0,1023), blue: random(0,1023)};
+		Tickers[i].current    = {red: random(0, 1023), green: random(0, 1023), blue: random(511, 1023)};
+		Tickers[i].targets[0] = {red: random(0, 1023), green: random(0, 1023), blue: random(511, 1023)};
+
 		Tickers[i].targets[1] = {red: 0, green: 0, blue: 511};
 		Tickers[i].targets[2] = {red: 1023, green: 1023, blue: 1023};
+	}
+}
+
+//FIXME: Make it flicker faster than nebula.
+void mode_stars()
+{
+	// Use targeting tickers constrained to be white
+	// to make a twinkling starfield
+	for (int i = 0; i < NUM_LEDS; ++i) {
+		Tickers[i] = Ticker(&hsv_targeted_tick, 3, 0, i * 5 + 1);
+
+		int16_t value = random(0, 1023);
+		Tickers[i].current    = {red: value, green: value, blue: value};
+		Tickers[i].targets[0] = {red: value, green: value, blue: value};
+
+		// We're lying here and using TickerRgb's "red", "green", and "blue"
+		// data members for "hue", "saturation", and "value" respectively.
+		Tickers[i].targets[1] = {red: 0, green: 0, blue: 0};
+		Tickers[i].targets[2] = {red: 0, green: 0, blue: 1023};
 	}
 }
 
 void mode_sparkle()
 {
 	for (int i = 0; i < NUM_LEDS; ++i) {
-		Tickers[i] = Ticker(&random_tick, 0, 2, i);
-	}
-}
-
-void mode_christmas_lights()
-{
-	for (int i = 0; i < NUM_LEDS; ++i) {
-		// Slow by 2^6
-		Tickers[i] = Ticker(&cycling_tick, 4, 6, i);
-
-		//TODO: Adjust these values to taste to simulate christmas lights
-		Tickers[i].targets[0] = {red: 1023, green:    0, blue:    0}; // Red
-		Tickers[i].targets[1] = {red: 1023, green: 1023, blue:    0}; // Yellow
-		Tickers[i].targets[2] = {red:    0, green: 1023, blue:    0}; // Green
-		Tickers[i].targets[3] = {red:    0, green:    0, blue: 1023}; // Blue
-	}
-}
-
-void mode_christmas()
-{
-	for (int i = 0; i < NUM_LEDS; ++i) {
-		// Slow by 2^6
-		Tickers[i] = Ticker(&cycling_tick, 2, 6, i);
-
-		Tickers[i].targets[0] = {red: 1023, green:    0, blue:    0}; // Red
-		Tickers[i].targets[1] = {red:    0, green: 1023, blue:    0}; // Green
+		Tickers[i] = Ticker(&random_tick, 0, 3, i);
 	}
 }
 
@@ -225,6 +213,18 @@ void dark_tick(Ticker *t, unsigned long tick)
 }
 
 /*
+ * Picks a random color and switches to it.
+ * Also randomizes how quickly it moves to the next color.
+ * This tick function does not use any targets.
+ */
+void random_tick(Ticker *t, unsigned long tick)
+{
+	if (tick % (1 << t->speed_adjust)) {return;}
+	t->speed_adjust = random(2,5);	
+	t->current = hsv2rgb((double)random(0,1023)/1023, (double)random(767,1023)/1023, (double)random(0,1023)/1023);
+}
+
+/*
  * Cycles around the color wheel by using tick to compute the hue (value and
  * saturation are held constant at 1).
  *
@@ -238,65 +238,7 @@ void dark_tick(Ticker *t, unsigned long tick)
 void colorwheel_tick(Ticker *t, unsigned long tick)
 {
 	int16_t hue = ((tick >> t->speed_adjust) + t->offset) % 360;
-	t->current = hsv2rgb((double)hue, 1.0, 1.0);
-}
-
-/*
- * Picks a random color and switches to it.
- *
- * By default it switches every tick. Slow this by 2^n by setting Ticker's
- * speed_adjust to n.
- *
- * This tick function does not use any targets
- */
-void random_tick(Ticker *t, unsigned long tick)
-{
-	if (tick % (1 << t->speed_adjust)) {return;}
-	t->current = {red: random(0,1023), green: random(0,1023), blue: random(0,1023)};
-}
-
-/*
- * Cycles through a fixed list of target colors.
- *
- * By default moves to the next color in the cycle every tick. Slow this
- * by 2^n by setting Ticker's speed_adjust to n.
- *
- * Advance the position in the cycle with Ticker's offset. This can be used to
- * sync multiple cycling_tick tickers into a string.
- *
- * This tick function uses as many targets as you choose to give the Ticker.
- */
-void cycling_tick(Ticker *t, unsigned long tick)
-{
-	int current_index = ((tick >> t->speed_adjust) + t->offset) % t->num_targets;
-	t->current = t->targets[current_index];
-}
-
-/*
- * Cycles through a fixed list of target colors, fading between them.
- *
- * Fading from one color to the next takes about a second. TODO: make this
- * dynamic via Ticker's speed_adjust.
- *
- * Advance the position in the cycle with Ticker's offset. This can be used to
- * sync multiple cycling_tick tickers into a string.
- *
- * This tick function uses as many targets as you choose to give the Ticker.
- */
-void fading_cycling_tick(Ticker *t, unsigned long tick)
-{
-	int previous_index = ((tick / TPS) + t->offset) % t->num_targets; // Update target once per second.
-	TickerRgb previous_color = t->targets[previous_index];
-	TickerRgb next_color     = t->targets[(previous_index + 1) % t->num_targets];
-
-	int16_t red_delta     = next_color.red       - previous_color.red;
-	int16_t current_red   = previous_color.red   + ((red_delta * (tick % TPS)) / TPS);
-	int16_t green_delta   = next_color.green     - previous_color.green;
-	int16_t current_green = previous_color.green + ((green_delta * (tick % TPS)) / TPS);
-	int16_t blue_delta    = next_color.blue      - previous_color.blue;
-	int16_t current_blue  = previous_color.blue  + ((blue_delta * (tick % TPS)) / TPS);
-
-	t->current = {red: current_red, green: current_green, blue: current_blue};
+	t->current = hsv2rgb((double)hue/360, 1.0, 1.0);
 }
 
 /*
@@ -348,6 +290,45 @@ void targeted_tick(Ticker *t, unsigned long tick)
 	current->blue  += stepToward(target->blue,  current->blue,  step_size);
 }
 
+/*
+ * As targeted_tick except the minima and maxima are given in HSV coordinates.
+ * This is a very lazy bit of copypasta from targeted_tick -- only the
+ * constraints are actually HSV colors; the current and target colors are still
+ * RGB and the steps occur in RGB space.
+ */
+void hsv_targeted_tick(Ticker *t, unsigned long tick)
+{
+	// speed_adjust keeps us from ticking on certain cycles
+	if (tick % (1 << t->speed_adjust)) {return;}
+
+	TickerRgb* current = &t->current;
+	TickerRgb* target  = &t->targets[0];
+	TickerRgb  minima  = t->targets[1];
+	TickerRgb  maxima  = t->targets[2];
+	int step_size = t->offset;
+
+	if (   current->red   == target->red
+		&& current->green == target->green
+		&& current->blue  == target->blue)
+	{
+		// We've reached the target! Pick a new one. We're lying here and using
+		// the "red", "green", and "blue" data members of minima and maxima for
+		// "hue", "saturation", and "value" respectively.
+		double hue        = (double)random(minima.red,   maxima.red)   / (double)1023;
+		double saturation = (double)random(minima.green, maxima.green) / (double)1023;
+		double value      = (double)random(minima.blue,  maxima.blue)  / (double)1023;
+		*target = hsv2rgb(hue, saturation, value);
+
+		// And just for fun let's also randomize the fade speed!
+		t->offset       = skew(random(1, 100), 5, 50, 100);
+		t->speed_adjust = random(0, 1);
+	}
+	// Still working towards the target. Take a step in the right direction
+	current->red   += stepToward(target->red,   current->red,   step_size);
+	current->green += stepToward(target->green, current->green, step_size);
+	current->blue  += stepToward(target->blue,  current->blue,  step_size);
+}
+
 /*** HELPER FUNCTIONS ***/
 
 /*
@@ -382,67 +363,31 @@ int16_t skew(int16_t x, int16_t exponent, int16_t max_out, int16_t range)
 
 /*
  * This function converts an HSV value into an RGB value.
- * Code taken from StackOverflow user DavidH:
- *   http://stackoverflow.com/questions/3018313/algorithm-to-convert-rgb-to-hsv-and-hsv-to-rgb-in-range-0-255-for-both
+ * Code taken from github user ratkins:
+ *   https://github.com/ratkins/RGBConverter
  */
-TickerRgb hsv2rgb(double hue, double sat, double value)
+TickerRgb hsv2rgb(double h, double s, double v)
 {
-	double sextant, chroma, q, t, ff;
-	double red, blue, green;
-	long  i;
-	TickerRgb   out;
+	double r, g, b;
+	TickerRgb out;
 
-	if(sat <= 0.0) {
-		red   = value;
-		green = value;
-		blue  = value;
-		return out;
+	int i = int(h * 6);
+	double f = h * 6 - i;
+	double p = v * (1 - s);
+	double q = v * (1 - f * s);
+	double t = v * (1 - (1 - f) * s);
+
+	switch(i % 6){
+		case 0: r = v, g = t, b = p; break;
+		case 1: r = q, g = v, b = p; break;
+		case 2: r = p, g = v, b = t; break;
+		case 3: r = p, g = q, b = v; break;
+		case 4: r = t, g = p, b = v; break;
+		case 5: r = v, g = p, b = q; break;
 	}
 
-	sextant = hue;
-	if(sextant >= 360.0) sextant = 0.0;
-	sextant /= 60.0;
-	i = (long)sextant;
-	ff = sextant - i;
-	chroma = value * (1.0 - sat);
-	q = value * (1.0 - (sat * ff));
-	t = value * (1.0 - (sat * (1.0 - ff)));
-
-	switch(i) {
-		case 0:
-			red   = value;
-			green = t;
-			blue  = chroma;
-			break;
-		case 1:
-			red   = q;
-			green = value;
-			blue = chroma;
-			break;
-		case 2:
-			red   = chroma;
-			green = value;
-			blue  = t;
-			break;
-		case 3:
-			red   = chroma;
-			green = q;
-			blue  = value;
-			break;
-		case 4:
-			red   = t;
-			green = chroma;
-			blue  = value;
-			break;
-		case 5:
-		default:
-			red   = value;
-			green = chroma;
-			blue  = q;
-			break;
-	}
-	out.red   = (int16_t)(red   * 1023);
-	out.green = (int16_t)(green * 1023);
-	out.blue  = (int16_t)(blue  * 1023);
+	out.red   = (int16_t)(r * 1023);
+	out.green = (int16_t)(g * 1023);
+	out.blue  = (int16_t)(b * 1023);
 	return out;
 }
